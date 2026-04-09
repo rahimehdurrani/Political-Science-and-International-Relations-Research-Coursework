@@ -1,0 +1,419 @@
+---
+title: "Problem Set 3"
+author: "Rahimeh Durrani"
+date: "`r Sys.Date()`" 
+format:
+     html:
+       embed-resources: true
+editor: visual
+---
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library("readxl")
+library("dplyr")
+library("ggplot2")
+library("knitr")
+library("tidyr")
+library("lubridate")
+library("tidyverse")
+library(kableExtra)
+library(modelsummary)
+
+suppressPackageStartupMessages(library(dplyr))
+
+
+```
+
+#### Question 1: Since the data is messy, we must clean it before the analysis. Please load the data and tell us what kind of problems you notice that prevent us from doing a simple analysis (such as time trends of estimated AKP vote share).
+
+```{r}
+polldata <- read_excel("poll_data.xlsx")
+head(polldata)
+```
+
+From what we can see, there are many problems existing within our data-set that can hinder any sort of analysis we would wish to perform. Firstly, the date column is not in a proper date format, there are written in several different formats. Secondly, there are missing values in the pollster and sample size columns which haven't been converted to NA values. Thirdly, there are some inconsistencies in the grammar aspect, for instance, many entries are using commas instead of decimal points which would make it difficult to calculate averages or do any exploratory data analysis. Additionally, like in the sample size column, instead of using commas for thousand separators, dots have been used like: "25.000", this would also harm any calculations we do as the value of the number completes changes from 25,000 to 25. Moreover there are also inconsistencies in our categorical variables, not all pollsters report the same totals and the same parties. Thus, this data set would not be usable for analysis like time-series analysis because the dates and numeric values aren't stored properly.
+
+#### Question 2: Using the lubridate library, create two variables start_date and end_date for each survey. Make sure that these variables are date objects (Hint: the dmy() function can be useful). Also, create a mid_date variable, which is the mid-date between start and end dates of a survey. Show your code.
+
+```{r}
+polldata <- polldata %>%
+  mutate(
+    cleaningdate = str_replace_all(date, "-","-"),
+    cleaningdate = str_replace_all(cleaningdate, c(
+      "Nisan" = "Apr",
+      "Nis" = "Apr",
+      "Mayıs" = "May"
+    )),
+    start_day = str_extract(cleaningdate, "^[0-9]{1,2}"),
+    end_day= str_extract(cleaningdate, "(?<=-)[0-9]{1,2}"),
+    month1= str_extract(cleaningdate, "(Apr|May)"),
+    month2= str_extract(cleaningdate, "(Apr|May)$")
+  ) %>%
+  mutate(
+    start_month = month1,
+    end_month = ifelse(is.na(month2), month1, month2),
+    start_day = ifelse(is.na(start_day), "15", start_day),
+    end_day = ifelse(is.na(end_day), start_day, end_day),
+    start_date = dmy(paste(start_day, start_month, "2023")),
+    end_date = dmy(paste(end_day, end_month, "2023")),
+  )
+polldata <- polldata %>%
+  mutate(
+    mid_date = start_date + as.numeric(difftime(end_date, start_date, 
+                                                units = "days")) / 2
+  )
+  
+head(polldata %>% 
+       select(date, start_date, end_date, mid_date), 5)
+
+```
+
+#### Question 3: Create a new poll_company_clean variable to clean poll company names and make sure to have identical names for the same polling company. Then, report the 5 company that have the most surveys in the data.Show your code.
+
+```{r}
+polldata <- polldata %>%
+  mutate(
+    poll_company_clean = case_when(
+      str_detect(tolower(poll_company), "konsensus") ~ "Konsensus",
+      str_detect(tolower(poll_company), "metropoll") ~ "Metropoll",
+      str_detect(tolower(poll_company), "anket") ~ "Anket",
+      str_detect(tolower(poll_company), "gezici") ~ "Gezici",
+      str_detect(tolower(poll_company), "makar") ~ "Makar",
+      TRUE ~ str_remove(poll_company, "\\[.*?\\]") %>% str_trim()
+    )
+  )
+top_companies <- polldata %>%
+  count(poll_company_clean, sort = TRUE) %>%
+  slice_head(n = 5)
+kable(top_companies, 
+      col.names= c("Polling Company", "Number of Surveys"), 
+      caption = "Top 5 Polling Companies by Number of Surveys"
+      )
+```
+
+```{r, echo=FALSE, results='hide'}
+#IMPORTANT: BEFORE WE MOVE ON TO DATA ANALYSIS, WE NEED TO FIX THE FORMATING ISSUES THAT EXIST WITHIN OUR DATA-SET:
+polldata %>%
+  filter(!str_detect(sample, "^[0-9\\.]+$")) %>%
+  select(sample)
+polldata <- polldata %>%
+  mutate(
+    sample = as.numeric(str_replace_all(sample, "\\.", ""))
+  )
+
+party_columns <- c(
+  "akp", "chp", "mhp", "iyi", "yesil",
+  "bbp", "yrp", "tip", "zafer", "memleket", "other",
+  "cumhur_total", "millet_total", "emek_ozgurluk_total"
+)
+polldata <- polldata %>%
+  mutate(across(
+    all_of(party_columns), 
+    ~ as.numeric(str_replace_all(., ",", "."))
+    )
+  )
+
+```
+
+#### Question 4: Create an other_total variable that combines the vote shares of all political parties except AKP, MHP,CHP, IYI, and Yesil party. Report the average vote shares for all six variables (AKP, MHP, CHP, IYI, Yesil, and others) in a formatted table
+
+```{r}
+other_party_cols <- c(
+  "bbp", "yrp", "tip", "zafer", "memleket", "other"
+)
+
+polldata <- polldata %>%
+  mutate(
+    other_total = rowSums(across(all_of(other_party_cols)), na.rm = TRUE)
+  )
+
+
+average_votes <- polldata %>%
+  summarise(
+    AKP_Avg = round(mean(akp, na.rm = TRUE), 3),
+    MHP_Avg = round(mean(mhp, na.rm = TRUE), 3),
+    CHP_Avg = round(mean(chp, na.rm = TRUE), 3),
+    IYI_Avg = round(mean(iyi, na.rm = TRUE), 3),
+    Yesil_Avg = round(mean(yesil, na.rm = TRUE), 3),
+    Other_Avg = round(mean(other_total, na.rm = TRUE), 3)
+  ) %>%
+  
+  pivot_longer(everything(), names_to = "Party", 
+               values_to = "Average Vote Share") %>%
+  mutate(Party = recode(Party,
+                        "AKP_Avg" = "AKP",
+                        "MHP_Avg" = "MHP",
+                        "CHP_Avg" = "CHP",
+                        "IYI_Avg" = "IYI",
+                        "Yesil_Avg" = "Yesil",
+                        "Other_Avg" = "Other Parties"
+  ))
+kable(average_votes, 
+      col.names= c("Party", "Average Vote Share"), 
+      caption = "Average Vote Shares by Party"
+)
+```
+
+#### Question 5:Now, create a scatterplot in which you put the estimated AKP vote share on the y-axis and the poll date on the x-axis. Also, add a fitted linear line on top of the scatterplot and a horizontal reference line for the AKP’s actual vote share in the election (35.62). What is your conclusion? Do poll companies do a good job of predicting the AKP’s actual vote share in the election? Show your code.
+
+```{r}
+#| message: false
+ggplot(polldata, aes(x = mid_date, y = akp)) +
+  geom_point(color = "darkgoldenrod1", alpha = 0.8) +
+  geom_smooth(method = "lm", color = "coral", se = FALSE) +
+  geom_hline(yintercept = 35.62, linetype = "dashed", color = "chartreuse4") +
+  labs(
+    title = "Estimated AKP Vote Share Over Time",
+    x = "Poll Mid Date",
+    y = "Estimated AKP Vote Share (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13,hjust=0.5, face= "bold"),
+    axis.title = element_text(size = 10, face = "bold")
+  )
+```
+
+What we see here is an upward trend in the estimated AKP vote share over time, as indicated by the orange line. However, the green dashed line that represents the actual vote share of AKP in the election (35.62%) is significantly lower than most of the estimates provided by the poll companies. This suggests that the poll companies didn't do that well of a job in predicting the AKP's actual vote share, as their estimates tend to be higher than the actual result.
+
+#### Question 6: Now, divide the AKP’s vote by 100 so it is a share variable. Construct a 95% and 99% confidence interval around the estimated AKP vote share using standard normal distribution approximation. Show your code.
+
+```{r}
+polldata <- polldata %>%
+  filter(!is.na(sample)) # dropping the NA values in our sample column
+polldata <- polldata %>%
+  mutate(
+    akp_share = akp / 100,
+    akp_se = sqrt((akp_share * (1 - akp_share)) / sample),
+    ci_95_lower = akp_share - qnorm(0.975) * akp_se,
+    ci_95_upper = akp_share + qnorm(0.975) * akp_se,
+    ci_99_lower = akp_share - qnorm(0.995) * akp_se,
+    ci_99_upper = akp_share + qnorm(0.995) * akp_se
+  )
+polldata %>%
+  select(akp_share, sample, akp_se, ci_95_lower, ci_95_upper, ci_99_lower, 
+         ci_99_upper) %>%
+  head(10) %>%
+  mutate(
+    akp_share = round(akp_share, 4),
+    akp_se = round(akp_se, 4),
+    ci_95_lower = round(ci_95_lower, 4),
+    ci_95_upper = round(ci_95_upper, 4),
+    ci_99_lower = round(ci_99_lower, 4),
+    ci_99_upper = round(ci_99_upper, 4)
+  ) %>%
+  
+  kable(
+    col.names = c("AKP Vote Share", "Sample Size", "Standard Error", 
+    "95% CI (L)", "95% CI (U)", "99% CI (L)", "99
+% CI (U)"),
+    caption = "AKP Vote Share with Confidence Intervals",
+    align="c"
+  )%>%
+  
+  kable_styling(
+  position = "center",
+  font_size = 9,
+  latex_options = c("hold_position","scale_down")
+)
+```
+
+#### Question 7: Using the constructed 95% confidence intervals in the previous question, create a scatterplot where you have the estimated AKP vote share variable and its confidence interval in the y-axis and poll date in the x-axis. Also, add the reference horizontal line for the AKP’s actual vote share (0.3562). Is AKP’s actual vote share more likely to be in the 95% confidence interval as elections approach? What is your conclusion?
+
+```{r}
+ggplot(polldata, aes(x = mid_date, y = akp_share)) +
+  geom_point(color = "deeppink3", position = position_dodge2(width = 1), 
+             alpha = 0.7) +
+  geom_errorbar(aes(ymin = ci_95_lower, ymax = ci_95_upper), width = 0.2, 
+                color = "royalblue4", position = position_dodge2(width = 1), 
+                alpha = 0.8) +
+  geom_hline(yintercept = 0.3562, linetype = "dashed", color = "magenta") +
+  labs(
+    title = "Estimated AKP Vote Share (95% Confidence Intervals Over Time)",
+    x = "Poll Mid Date",
+    y = "Estimated AKP Vote Share"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11,hjust=0.5, face= "bold"),
+    axis.title = element_text(size = 10, face = "bold")
+  )
+```
+
+From the scatterplot above, we can infer that as the election date approaches, the estimated AKP vote shares (represented by the pink data points) tend to cluster more closely around the dashed line which represents the actual vote share of 35.62%. We can observe this trend more clearly after May 01. Thus, we can conclude that AKP's vote share is likely to fall within the 95% CI as the election approaches.
+
+#### Question 8: Create a scatterplot with the sample size on the x-axis and standard errors (which you calculated in Question 6) on the y-axis. What do you observe? Why do you think this happens?
+
+```{r}
+ggplot(polldata, aes(x = sample, y = akp_se)) +
+  geom_point(color = "darkgreen", alpha = 0.7) +
+  labs(
+    title = "Sample Size vs Standard Error of AKP Vote Share",
+    x = "Sample Size",
+    y = "Standard Error"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11,hjust=0.5, face= "bold"),
+    axis.title = element_text(size = 10, face = "bold")
+  )
+```
+
+What is evident from the scatter plot above is that we see a sharp decline in standard errors as sample size increases. So we can infer that polls with larger sample sizes tend to have lower SEs.This happens because standard error is inversely related to the square root of the sample size. As the sample size increases, the variability of the sample mean decreases, leading to a smaller standard error. This means that larger samples provide more precise estimates of the population parameter, resulting in lower standard errors.
+
+#### Question 9: Please report the share of polls that include the actual AKP’s vote share within its 95% confidence interval. Why do you think most polls miss the actual vote share? Discuss.
+
+```{r}
+polldata <- polldata %>%
+  mutate(
+    akp_in_ci_95 = ifelse(ci_95_lower <= 0.3562 & ci_95_upper >= 0.3562, 1, 0)
+  )
+share_in_ci_95 <- mean(polldata$akp_in_ci_95, na.rm = TRUE)
+cat("The share of polls that include the actual AKP's vote share
+    \nwithin its 95% confidence interval is:", 
+    round(share_in_ci_95 * 100, 2), "%\n")
+```
+
+There are many possible reasons as to why most polls miss the actual vote share. These reasons could include issues like sampling errors, biases such as non-response bias and social desirability bias and perhaps even the way the ballots are formatted. We saw such an issue in the 2000 US presidential elections, where Al Gore lost in Florida due to the confusing "butterfly ballot". Aside from this issue, when it comes to politics and elections, many people feel the need to hide which candidate they truly align with due to social desirability. They may portray themselves to be "undecided" or could even vote for the opposition to be socially desirable. The most important issue could be sampling bias and sampling error. For pollsters to not miss most of the actual vote share, we would require a representative sample, one that has a good balance of rural and urban populations, and not just places that are easier to reach, in Turkey's situation an example of this could be the earthquake-hit regions.
+
+#### Question 10: Repeat the exercise in Question 6, but construct the 95% confidence intervals using t-distribution. Report the average lower and upper bound of the 95% confidence intervals from the t-distribution and the standard normal approximation. Do you see any difference? Why/why not?
+
+```{r}
+polldata <- polldata %>%
+  mutate(
+    ci_t_95_lower = akp_share - qt(0.975, df = sample - 1) * akp_se,
+    ci_t_95_upper = akp_share + qt(0.975, df = sample - 1) * akp_se
+  )
+average_ci_bounds <- polldata %>%
+  summarise(
+    avg_normal_ci_lower = round(mean(ci_95_lower, na.rm = TRUE), 4),
+    avg_normal_ci_upper = round(mean(ci_95_upper, na.rm = TRUE), 4),
+    avg_t_ci_lower = round(mean(ci_t_95_lower, na.rm = TRUE), 4),
+    avg_t_ci_upper = round(mean(ci_t_95_upper, na.rm = TRUE), 4)
+  )
+
+kable(average_ci_bounds,
+      col.names = c("Avg Normal CI Lower", "Avg Normal CI Upper", 
+                    "Avg t CI Lower", "Avg t CI Upper"),
+      caption = "Average Confidence Interval Bounds: Normal vs t-Distribution",
+      align="c",
+  
+) %>%
+  
+  kable_styling(position = "center",
+                latex_options = c("hold_position"))
+```
+
+From the table above, we can see that the average lower and upper bounds of the 95% confidence intervals calculated using the standard normal approximation and the t-distribution are the same. This could be due to the fact that as our sample size (N) increases, the t-distribution approaches the standard normal distribution and since most of our sample sizes are quite large, the difference between both methods is very minimal, almost none.
+
+#### Question 11:Do politically connected survey companies report the AKP vote share more than others? The following four companies can be defined as “politically connected” based on media reports: Areda, ADA, ORC, and Optimar. For the sake of this exercise, we will treat these companies as “politically connected” and others as “politically unconnected.” This exercise will test the hypothesis that politically connected survey companies report AKP vote share more than others.Using a two-sample t-test, conduct a hypothesis test to determine whether the difference in estimated AKP vote shares between politically connected polling firms and others is statistically significant at the 5% level.Please carefully interpret the resulting p-value and confidence interval and show your code. What is your overall conclusion?
+
+```{r}
+
+polldata <- polldata %>%
+  mutate(
+    politically_connected = ifelse(poll_company_clean %in% 
+                                     c("Areda", "ADA", "ORC", "Optimar"), 
+                                   "Connected", "Unconnected")
+  )
+connected_akp <- polldata %>%
+  filter(politically_connected == "Connected") %>%
+  pull(akp_share)
+
+unconnected_akp <- polldata %>%
+  filter(politically_connected == "Unconnected") %>%
+  pull(akp_share)
+t_test_result <- t.test(connected_akp, unconnected_akp, var.equal = FALSE)
+
+t_test_result
+
+cat("P-value:", round(t_test_result$p.value, 4), "\n")
+cat("95% Confidence Interval:", 
+    round(t_test_result$conf.int[1], 4), "to", 
+    round(t_test_result$conf.int[2], 4), "\n")
+
+```
+
+In order to conduct a hypothesis test, it is imperative to highlight what our null and alternative hypothesis are, H0: There is no difference in the estimated AKP vote share reported by politically connected polling firms and politically unconnected polling firms. H1: There is a difference in the estimated AKP vote share reported by politically connected polling firms and politically unconnected polling firms. We carried out this text at the 5% significance level, which would imply that in order for us to reject H0, our P-value has to be less than 0.05. From the t-test results above, we can see that our P-value is 0.4863, which is \> 0.05, thus, we fail to reject H0. This means that we do not have enough evidence to confidently say that there is a significant difference in the estimated AKP vote share reported by politically connected polling firms and politically unconnected polling firms. Additionally, the 95% confidence interval for the difference in means (-0.0341 to 0.0195) includes zero, which further supports our conclusion of failing to reject the null hypothesis. Overall, we conclude that there is no statistically significant difference in the estimated AKP vote shares between politically connected and unconnected polling firms based on this analysis.
+
+#### Question 12: Now, use a linear regression and repeat the same analysis you did in Question 11. Please use the model summary package to present your regression results in a nicely formatted table. Carefully interpret each estimated coefficient and R-squared. What is your conclusion?
+
+```{r}
+
+polldata <- polldata %>%
+  mutate(
+    politically_connected_binary = ifelse(
+      poll_company_clean %in% c("Areda", "ADA", "ORC", "Optimar"),
+      1, 0
+    )
+  )
+regression_model <- lm(akp_share ~ politically_connected_binary, 
+                       data = polldata)
+regression_model
+modelsummary(
+  regression_model,
+  statistic = "({std.error})",
+  stars = TRUE,
+  output = "kableExtra",
+  coef_map = c(
+    "politically_connected_binary" = "Political Connection",
+    "(Intercept)" = "Intercept"
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared"),
+  title = "Regression Model"
+)%>%
+  kable_styling(
+    position = "center",
+    font_size = 8,          # <-- decrease font size here
+    latex_options = c("hold_position")
+  )
+```
+
+In the linear regression model above, the intercept is 0.37005. This value represents our baseline for when all the other regressors are set to 0. In this case, that means when a polling firm is politically unconnected, the estimated AKP vote share is approximately 37.005%. This value is also statistically significant highlighted by the "\*\*\*" next to the value, indicating it's p-vale to be \< 0.001.
+
+The coefficient for the "Political Connection" variable is -0.00816, which indicates that politically connected polling firms report an estimated AKP vote share that is 0.81 percentage points lower than politically unconnected firms, on average. However, this coefficient is not statistically significant as indicated by the lack of stars next to it, which means that we cannot confidently say that political connection has a meaningful impact on the estimated AKP vote share.
+
+The R-squared value of 0.012 indicates that only 1.2% of the variability in the estimated AKP vote share can be explained by whether a polling firm is politically connected or not. This very low R-squared value suggests that political connection is not a strong predictor of the estimated AKP vote share. Overall, our conclusion from this regression analysis aligns with our findings from the t-test in Question 11 that there is no statistically significant difference in the estimated AKP vote shares between politically connected and unconnected polling firms.
+
+#### Question 13: Now revise the model in Question 12. What does the β3 capture in this regression? What about β1? Explain and report the results.
+
+```{r}
+
+polldata <- polldata %>%
+  mutate(
+    PollMay = ifelse(format(end_date, "%m") == "05", 1, 0)
+  )
+regression_model_revised <- lm(akp_share ~ 
+                              politically_connected_binary * PollMay, 
+                               data = polldata)
+regression_model_revised
+modelsummary(
+  regression_model_revised,
+  statistic = "({std.error})",
+  stars = TRUE,
+  output = "kableExtra",
+  coef_map = c(
+    "politically_connected_binary" = "Political Connection",
+    "PollMay" = "Poll in May",
+    "politically_connected_binary:PollMay" = 
+      "Interaction: Political Connection & Poll in May",
+    "(Intercept)" = "Intercept"
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared"),
+  title = "Revised Regression Model with Interaction Term"
+) %>%
+  kable_styling(
+    latex_options = c("scale_down", "hold_position"), 
+    position = "center"
+  )
+```
+
+In our revised regression model, we involved an interaction term. This term is very helpful in our understanding of whether the effect of political connection on the estimated AKP vote share changes when the poll is conducted in May.
+
+Firstly, for our B1 value, our coefficient for Political Connection is 0.001. This value represents the estimated difference in AKP vote share between politically connected and unconnected polling firms outside of May . So, if a politically connected polling firm conducts a poll, the estimated AKP vote share is 0.1 percentage points higher than that of a politically unconnected firm, on average. However, this coefficient is not statistically significant, indicating that we cannot confidently say that political connection has a meaningful impact on the estimated AKP vote share outside of May.
+
+Secondly, for B3, our interaction term, the coefficient is -0.016. This value shows us that when a politically connected polling firm conducts a poll in May, the estimated AKP vote share is 1.6 percentage points lower than what would be expected based on the individual effects of political connection and conducting a poll in May alone. However, similar to B1, this coefficient is also not statistically significant.
+
+Lastly, just to capture all the results. Our intercept value is a highly significant value of 0.360, which represents the estimated AKP vote share for politically unconnected polling firms conducting polls outside of May. So the predicted AKP vote share would be 36% for polls conducted outside of May by politically unconnected firms. The coefficient for polling in May, however, is statistically significant with the value of 0.018. This means AKP vote share increases by 1.8% if polls are conducted in May. The R-squared value of 0.097 indicates that only 9.7% of the variability in the estimated AKP vote share can be explained by our model. While this value is better than our previous regression outcome, it is still quite low. In conclusion, we can infer that timing, i.e polling in May, matters more than who was polling but even this connection, due to our low R-squared value, is very weak.
